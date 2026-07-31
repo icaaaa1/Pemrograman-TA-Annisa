@@ -1,0 +1,68 @@
+#include <DHT.h>
+
+#define DHTPIN      2
+#define DHTTYPE     DHT22
+
+#define RELAY_PIN   8
+#define BUTTON_PIN  12
+
+DHT dht(DHTPIN, DHTTYPE);
+
+bool heating = false;
+bool lastButton = HIGH;
+
+void setup() {
+
+  Serial.begin(9600);
+
+  dht.begin();
+
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  digitalWrite(RELAY_PIN, LOW);
+
+}
+
+void loop() {
+
+  float suhu = dht.readTemperature();
+
+  bool button = digitalRead(BUTTON_PIN);
+
+  // Tombol ditekan
+  if (lastButton == HIGH && button == LOW) {
+    heating = true;
+  }
+
+  lastButton = button;
+
+  // Kontrol relay
+  if (heating) {
+
+    if (suhu < 37.0) {
+      digitalWrite(RELAY_PIN, HIGH);   // Relay ON
+    }
+    else {
+      digitalWrite(RELAY_PIN, LOW);    // Relay OFF
+      heating = false;
+    }
+
+  }
+  else {
+    digitalWrite(RELAY_PIN, LOW);
+  }
+
+  Serial.print("Suhu : ");
+  Serial.print(suhu);
+  Serial.print(" °C");
+
+  Serial.print(" | Relay : ");
+
+  if (digitalRead(RELAY_PIN))
+    Serial.println("ON");
+  else
+    Serial.println("OFF");
+
+  delay(1000);
+}
