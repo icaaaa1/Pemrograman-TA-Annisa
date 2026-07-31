@@ -1,0 +1,39 @@
+#include <DHT.h>
+
+#define DHTPIN 2
+#define DHTTYPE DHT22
+
+DHT dht(DHTPIN, DHTTYPE);
+
+void setup() {
+  Serial.begin(9600);
+
+  dht.begin();
+
+  Serial.println("Karakterisasi Sensor DHT22");
+  Serial.println("Waktu(s)\tSuhu(C)\tKelembapan(%)");
+}
+
+void loop() {
+
+  static unsigned long t0 = millis();
+
+  float suhu = dht.readTemperature();
+  float hum  = dht.readHumidity();
+
+  if (isnan(suhu) || isnan(hum)) {
+    Serial.println("Sensor gagal dibaca");
+    delay(1000);
+    return;
+  }
+
+  float waktu = (millis() - t0) / 1000.0;
+
+  Serial.print(waktu,1);
+  Serial.print("\t");
+  Serial.print(suhu,2);
+  Serial.print("\t");
+  Serial.println(hum,2);
+
+  delay(1000);
+}
