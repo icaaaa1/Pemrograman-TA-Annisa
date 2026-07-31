@@ -1,0 +1,102 @@
+#include <Arduino.h>
+#include <math.h>
+
+const int ledPin = 5;         
+const int sensorPin = A0;
+
+const int samples = 50;
+const int sampleDelay = 5;
+const int measurementInterval = 5000;
+
+// Atur kecerahan LED (0-255)
+const int ledBrightness = 255;
+
+
+const float V0_CAL = 4.24;     // Tegangan tanpa sampel (Volt)
+const float L = 20.0;          // mm
+
+float readVoltage() {
+
+  long sum = 0;
+
+  analogRead(sensorPin);
+  delay(2);
+
+  for (int i = 0; i < samples; i++) {
+    sum += analogRead(sensorPin);
+    delay(sampleDelay);
+  }
+
+  float adc = sum / (float)samples;
+
+  // Konversi ADC menjadi Tegangan
+  return adc * 5.0 / 1023.0;
+}
+
+
+void setup() {
+
+  Serial.begin(9600);
+
+  pinMode(ledPin, OUTPUT);
+
+  analogWrite(ledPin, ledBrightness);
+
+  delay(500);
+
+  Serial.println("==============================");
+  Serial.println("Pengukuran OPT101");
+  Serial.println("==============================");
+
+  Serial.print("PWM LED = ");
+  Serial.println(ledBrightness);
+
+  Serial.print("V0 = ");
+  Serial.print(V0_CAL, 3);
+  Serial.println(" V");
+}
+
+void loop() {
+
+  float V = readVoltage();
+
+  Serial.println("------------------------------");
+
+  Serial.print("V = ");
+  Serial.print(V, 4);
+  Serial.println(" V");
+
+  if (V <= 0) {
+
+    Serial.println("Pembacaan tidak valid");
+
+  }
+  else if (V >= V0_CAL) {
+
+    Serial.println("WARNING : V >= V0");
+    Serial.println("Periksa posisi sensor / kalibrasi.");
+
+  }
+  else {
+
+    float T = V / V0_CAL;
+    float percentT = T * 100.0;
+    float A = -log10(T);
+    float mu = log(V0_CAL / V) / L;
+
+    Serial.print("Transmitansi = ");
+    Serial.println(T, 4);
+
+    Serial.print("%T = ");
+    Serial.print(percentT, 2);
+    Serial.println(" %");
+
+    Serial.print("Absorbansi = ");
+    Serial.println(A, 4);
+
+    Serial.print("Koefisien Atenuasi = ");
+    Serial.print(mu, 6);
+    Serial.println(" mm^-1");
+  }
+  delay(measurementInterval);
+}
