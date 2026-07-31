@@ -1,0 +1,291 @@
+#include <DHT.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <math.h>
+
+#define DHT_COLD_PIN        2
+#define DHT_HOT_PIN         3
+#define LED_TEST_PIN        5   
+#define BUZZER_PIN          6
+#define PTC_HEATER_RELAY    8
+#define PELTIER_10A_PWM     9
+#define SWITCH_HOT_PIN     12
+#define OPT101_PIN         A0
+
+#define DHTTYPE DHT22
+
+DHT dhtCold(DHT_COLD_PIN, DHTTYPE);
+DHT dhtHot(DHT_HOT_PIN, DHTTYPE);
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+
+const float setPointCold = 2.0; 
+const int ledBrightness = 255;
+
+const float VREF = 5.0;         
+const float V0_CAL = 4.237;    
+
+const float L = 20.0;         
+
+const int samples = 50;
+const int sampleDelay = 5;
+
+
+unsigned long lastLedToggleTime = 0;
+unsigned long lastDHTReadTime = 0;
+unsigned long lastLCDUpdateTime = 0;
+unsigned long lastBuzzerTime = 0;
+unsigned long lastOpticalSampleTime = 0;
+
+bool ledState = true;
+const unsigned long LED_ON_DURATION  = 5UL * 60UL * 1000UL;
+const unsigned long LED_OFF_DURATION = 60UL * 60UL * 1000UL;
+
+bool buzzerState = false;
+bool isReadyToConsume = false;
+bool isAsiBasi = false;
+
+bool isOpticalMeasuring = false;
+int currentOpticalSampleCount = 0;
+long currentOpticalSum = 0;
+float finalOpticalValue = 0; // Nilai rata-rata ADC
+
+
+float tempCold = NAN;
+float tempHot = NAN;
+float error = 0; 
+float V = 0;         
+float T = 0;
+float percentT = 0;
+float A = 0;
+float mu = 0;
+int currentPWM = 0;
+
+float errorMF[5];
+const float pwmSingleton[5] = { 0, 40, 100, 180, 255 };
+
+float trapmf(float x, float a, float b, float c, float d) {
+    if (a == b && x <= b) return 1.0;
+    if (x <= a) return 0.0;
+    if (c == d && x >= c) return 1.0;
+    if (x >= d) return 0.0;
+    if (x >= b && x <= c) return 1.0;
+    if (x > a && x < b) return (x - a) / (b - a);
+    return (d - x) / (d - c);
+}
+
+float trimf(float x, float a, float b, float c) {
+    if(x <= a || x >= c) return 0.0;
+    if(x == b) return 1.0;
+    if(x > a && x < b) return (x - a) / (b - a);
+    return (c - x) / (c - b);
+}
+
+void fuzzify(float errVal) {
+    float e = constrain(errVal, -5.0, 10.0);
+    errorMF[0] = trapmf(e, -5, -5, -3, -1);
+    errorMF[1] = trimf(e, -3, -1, 1);      
+    errorMF[2] = trimf(e, -1, 0, 1);        
+    errorMF[3] = trimf(e, 0, 2, 4);         
+    errorMF[4] = trapmf(e, 3, 5, 10, 10);  
+}
+
+int defuzzifySugeno() {
+    float atas = 0;
+    float bawah = 0;
+    for(int i = 0; i < 5; i++) {
+        atas += errorMF[i] * pwmSingleton[i];
+        bawah += errorMF[i];
+    }
+    if(bawah == 0) return 0;
+    return constrain((int)(atas / bawah), 0, 255);
+}
+
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(SWITCH_HOT_PIN, INPUT_PULLUP);
+  pinMode(LED_TEST_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(PTC_HEATER_RELAY, OUTPUT);
+  pinMode(PELTIER_10A_PWM, OUTPUT);
+
+  analogWrite(PELTIER_10A_PWM, 0);
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(PTC_HEATER_RELAY, LOW);
+  analogWrite(LED_TEST_PIN, ledBrightness);
+
+  dhtCold.begin();
+  dhtHot.begin();
+
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(F("ASI STORAGE"));
+  lcd.setCursor(0, 1);
+  lcd.print(F("Fuzzy Sugeno"));
+
+  delay(2000);
+  lcd.clear();
+  
+  unsigned long currentM = millis();
+  lastLedToggleTime = currentM;
+  lastDHTReadTime = currentM;
+  lastLCDUpdateTime = currentM;
+  lastBuzzerTime = currentM;
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  if(ledState) {
+      if(currentMillis - lastLedToggleTime >= LED_ON_DURATION) {
+          ledState = false;
+          lastLedToggleTime = currentMillis;
+          analogWrite(LED_TEST_PIN, 0);
+          isOpticalMeasuring = false; 
+          currentOpticalSampleCount = 0; 
+      }
+  } else {
+      if(currentMillis - lastLedToggleTime >= LED_OFF_DURATION) {
+          ledState = true;
+          lastLedToggleTime = currentMillis;
+          analogWrite(LED_TEST_PIN, ledBrightness);
+      }
+  }
+
+  if(ledState && isOpticalMeasuring) {
+      if(currentOpticalSampleCount < samples) {
+          if (currentMillis - lastOpticalSampleTime >= sampleDelay) {
+              lastOpticalSampleTime = currentMillis;
+              currentOpticalSum += analogRead(OPT101_PIN);
+              currentOpticalSampleCount++;
+          }
+      } else {
+          finalOpticalValue = currentOpticalSum / (float)samples;
+          isOpticalMeasuring = false;
+          currentOpticalSampleCount = 0; 
+
+         
+          V = finalOpticalValue * (VREF / 1023.0); 
+
+          if(V > 0 && V <= V0_CAL) {
+              T = V / V0_CAL;
+              percentT = T * 100.0;
+              A = -log10(T);
+              mu = log(V0_CAL / V) / L;
+              
+              if(mu < 0.225) { 
+                  isAsiBasi = true;
+              }
+          } else {
+             // Jika pembacaan lebih dari nilai kalibrasi awal (noise) atau 0, anggap 0
+             V = 0; T = 0; percentT = 0; A = 0; mu = 0;
+          }
+      }
+  }
+
+  if (currentMillis - lastDHTReadTime >= 2000) {
+      lastDHTReadTime = currentMillis;
+      
+      tempCold = dhtCold.readTemperature();
+      tempHot = dhtHot.readTemperature();
+
+      if(!isnan(tempCold)) {
+          error = tempCold - setPointCold;
+          fuzzify(error); 
+          currentPWM = defuzzifySugeno();
+      } else {
+          currentPWM = 0;
+          for(int i = 0; i < 5; i++) {
+              errorMF[i] = 0;
+          }
+      }
+
+      if(ledState && !isOpticalMeasuring && currentOpticalSampleCount == 0) {
+          isAsiBasi = false; 
+          isOpticalMeasuring = true;
+          currentOpticalSum = 0;
+          analogRead(OPT101_PIN);
+          lastOpticalSampleTime = currentMillis;
+          currentOpticalSampleCount = 0; 
+      }
+      
+      analogWrite(PELTIER_10A_PWM, currentPWM);
+  }
+
+  bool isSwitchOn = (digitalRead(SWITCH_HOT_PIN) == LOW);
+
+  if(isSwitchOn) {
+      if(!isnan(tempHot)) {
+          if(tempHot >= 37.0) {
+              isReadyToConsume = true;  
+          } else {
+              isReadyToConsume = false;
+          }
+
+          if(tempHot >= 42.0) {
+              digitalWrite(PTC_HEATER_RELAY, LOW); 
+          } else {
+              digitalWrite(PTC_HEATER_RELAY, HIGH); 
+          }
+      } else {
+          digitalWrite(PTC_HEATER_RELAY, LOW); 
+      }
+  } else {
+      digitalWrite(PTC_HEATER_RELAY, LOW); 
+      isReadyToConsume = false;                
+  }
+
+  if ((ledState && isAsiBasi) || isReadyToConsume) {
+      if (currentMillis - lastBuzzerTime >= 500) {
+          lastBuzzerTime = currentMillis;
+          buzzerState = !buzzerState;
+          digitalWrite(BUZZER_PIN, buzzerState ? HIGH : LOW);
+      }
+  } else {
+      digitalWrite(BUZZER_PIN, LOW);
+      buzzerState = false;
+  }
+
+  if (currentMillis - lastLCDUpdateTime >= 300) {
+      lastLCDUpdateTime = currentMillis;
+      
+      lcd.setCursor(0, 0);
+      if(ledState && isAsiBasi) {
+          lcd.print(F("!! ASI BASI !!  ")); 
+      } else {
+          lcd.print(F("Cold:")); 
+          if(!isnan(tempCold)) {
+              lcd.print(tempCold, 1);
+              lcd.print((char)223);
+              lcd.print(F("C ")); 
+          } else {
+              lcd.print(F("ERR   ")); 
+          }
+          lcd.setCursor(11, 0);
+          if(ledState) lcd.print(F("[UJI]")); 
+          else lcd.print(F("[OFF]")); 
+      }
+
+      lcd.setCursor(0, 1);
+      if(isReadyToConsume) {
+          lcd.print(F("ASI SIAP MINUM  ")); 
+      } else {
+          lcd.print(F("Warm:")); 
+          if(!isnan(tempHot)) {
+              lcd.print(tempHot, 1);
+              lcd.print((char)223);
+              lcd.print(F("C ")); 
+          } else {
+              lcd.print(F("ERR   ")); 
+          }
+          lcd.setCursor(12, 1);
+          if(isSwitchOn) lcd.print(F("[ON]")); 
+          else lcd.print(F("[OF]")); 
+      }
+  }
+}
