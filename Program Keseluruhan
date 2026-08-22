@@ -63,7 +63,7 @@ float mu = 0;
 int currentPWM = 0;
 
 float errorMF[5];
-const float pwmSingleton[5] = { 0, 40, 100, 180, 255 };
+const float pwmSingleton[5] = { 0, 50, 100, 150, 255 };
 
 float trapmf(float x, float a, float b, float c, float d) {
     if (a == b && x <= b) return 1.0;
